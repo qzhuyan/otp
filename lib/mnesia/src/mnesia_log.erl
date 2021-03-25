@@ -975,6 +975,14 @@ load_dcl(Tab, Rep) ->
     FName = mnesia_lib:tab2dcl(Tab),
     case mnesia_lib:exists(FName) of
 	true ->
+        {ok, Size} = filelib:file_size(FName),
+        {max_heap_size, #{size := MaxHeapSize}} = process_info(self(), max_heap_size),
+        MinHeapSize = case {MaxHeapSize == 0, Size > 16*1024*1024} of
+                          {true, true} -> 16*1024*1024;
+                          {false, _} -> MaxHeapSize - 1
+                      end,
+        process_flag(min_heap_size, MinHeapSize),
+
 	    Name = {load_dcl,Tab},
 	    open_log(Name,
 		     dcl_log_header(),
