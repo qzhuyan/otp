@@ -39,7 +39,7 @@
 -define(MAX_FILES, 65000).
 -define(MAX_BYTES, ((1 bsl 64) - 1)).
 -define(MAX_CHUNK_SIZE, 8388608).
--define(MAX_FWRITE_CACHE, 65536).
+-define(MAX_FWRITE_CACHE, 8388608).
 
 %% Object defines
 -define(LOGMAGIC, <<1,2,3,4>>). 
