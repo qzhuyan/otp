@@ -692,6 +692,7 @@ env() ->
      dc_dump_limit,
      send_compressed,
      send_table_batch_size,
+     copy_from_node,
      schema
     ].
 
@@ -744,6 +745,8 @@ default_env(send_compressed) ->
     0;
 default_env(send_table_batch_size) ->
     0;
+default_env(copy_from_node) ->
+    undefined;
 default_env(schema) ->
     [].
 
@@ -794,6 +797,7 @@ do_check_type(no_table_loaders, N) when is_integer(N), N > 0 -> N;
 do_check_type(dc_dump_limit,N) when is_number(N), N > 0 -> N;
 do_check_type(send_compressed, L) when is_integer(L), L >= 0, L =< 9 -> L;
 do_check_type(send_table_batch_size, L) when is_integer(L), L >= 0 -> L;
+do_check_type(copy_from_node, L) when is_atom(L) -> L;
 do_check_type(schema, L) when is_list(L) -> L.
 
 bool(true) -> true;
