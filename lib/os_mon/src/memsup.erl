@@ -344,28 +344,39 @@ handle_cast(_Msg, State) ->
 
 %% It's time to check memory
 handle_info(time_to_collect, State) ->
-    case State#state.wd_timer of
-	undefined ->
+    MemInfoSrc = application:get_env(os_mon, meminfo_src, collect_sys),
+    IsPort = State#state.port_mode,
+    case {State#state.wd_timer, State#state.ext_wd_timer} of
+	{undefined, undefined} when IsPort ->
 	    WDTimer = erlang:send_after(State#state.helper_timeout,
-					self(),
-					reg_collection_timeout),
-	    if
-		State#state.port_mode ->
-		    State#state.pid ! {self(), collect_sys},
-		    {noreply, State#state{wd_timer=WDTimer,
-					  pending=[reg]}};
-		true ->
-		    OS = State#state.os,
-		    Self = self(),
-		    Pid = spawn_link(fun() ->
+					self(), reg_collection_timeout),
+        State#state.pid ! {self(), MemInfoSrc},
+        NewState = case MemInfoSrc of
+                       collect_sys ->
+                           State#state{wd_timer=WDTimer, pending=[reg]};
+                       collect_ext_sys ->
+                           State#state{ext_wd_timer=WDTimer, ext_pending=[reg]}
+                   end,
+		{noreply, NewState};
+	{undefined, undefined} when not IsPort ->
+        WDTimer = erlang:send_after(State#state.helper_timeout,
+					self(), reg_collection_timeout),
+		OS = State#state.os,
+		Self = self(),
+		Pid = spawn_link(fun() ->
 					     MU = get_memory_usage(OS),
 					     Self ! {collected_sys,MU}
 				     end),
-		    {noreply, State#state{pid=Pid, wd_timer=WDTimer,
-					  pending=[reg]}}
-	    end;
-	_TimerRef ->
-	    {noreply, State#state{pending=[reg|State#state.pending]}}
+		{noreply, State#state{pid=Pid, wd_timer=WDTimer,
+					  pending=[reg]}};
+	{_, undefined} ->
+        {noreply, State#state{pending=[reg|State#state.pending]}};
+	{undefined, _} when IsPort ->
+        {noreply, State#state{ext_pending=[reg|State#state.ext_pending]}};
+    _ when IsPort andalso collect_ext_sys =:= MemInfoSrc ->
+            {noreply, State#state{ext_pending=[reg|State#state.ext_pending]}};
+    _ ->
+            {noreply, State#state{pending=[reg|State#state.pending]}}
     end;
 
 %% Memory data collected
@@ -394,27 +405,8 @@ handle_info({collected_sys, {Alloc,Total}}, State) ->
 		    true ->
 			clear_alarm(system_memory_high_watermark)
 		end,
-
 		%% Check if process data should be collected
-		case State#state.sys_only of
-		    false ->
-			{Pid, Bytes} = get_worst_memory_user(),
-			Threshold= State#state.proc_mem_watermark*Total,
-
-			%% Check if process alarm should be set/cleared
-			if
-			    Bytes > Threshold ->
-				set_alarm(process_memory_high_watermark,
-					  Pid);
-			    true ->
-				clear_alarm(process_memory_high_watermark)
-			end,
-			
-			State#state{mem_usage={Alloc, Total},
-				    worst_mem_user={Pid, Bytes}};
-		    true ->
-			State#state{mem_usage={Alloc, Total}}
-		end;
+        maybe_check_process_mem(State, {Alloc, Total});
 	    false ->
 		State
 	end,
@@ -492,8 +484,23 @@ handle_info({collected_ext_sys, SysMemUsage}, State) ->
 
     %% Send the reply to all waiting clients, preserving time order
     reply(State#state.ext_pending, undef, SysMemUsage),
-
-    {noreply, State#state{ext_wd_timer=undefined, ext_pending=[]}};
+    Total = proplists:get_value(system_total_memory, SysMemUsage),
+    Alloc = Total - proplists:get_value(available_memory, SysMemUsage),
+    case lists:member(reg, State#state.ext_pending) of
+        true ->
+            if
+                Alloc > State#state.sys_mem_watermark*Total ->
+                    set_alarm(system_memory_high_watermark, []);
+                true ->
+                    clear_alarm(system_memory_high_watermark)
+            end,
+            erlang:send_after(State#state.timeout, self(), time_to_collect),
+            ok;
+        false ->
+            skip
+    end,
+    NewState = maybe_check_process_mem(State, {Alloc, Total}),
+    {noreply, NewState#state{ext_wd_timer=undefined, ext_pending=[]}};
 
 %% Timeout during ext memory data collection (port_mode==true only)
 handle_info(ext_collection_timeout, State) ->
@@ -843,6 +850,21 @@ clear_alarms() ->
 		  end,
 		  get()).
 
+maybe_check_process_mem(#state{ sys_only = false } = State, {Alloc, Total}) ->
+    {Pid, Bytes} = get_worst_memory_user(),
+    Threshold = State#state.proc_mem_watermark*Total,
+    if
+        Bytes > Threshold ->
+            set_alarm(process_memory_high_watermark, Pid);
+
+        true ->
+            clear_alarm(process_memory_high_watermark)
+    end,
+    State#state{mem_usage={Alloc, Total},
+                worst_mem_user={Pid, Bytes}};
+maybe_check_process_mem(State, _) ->
+    State.
+
 %%--Auxiliary-----------------------------------------------------------
 
 %% Type conversions
@@ -857,3 +879,4 @@ flush(Msg) ->
     after 0 ->
 	    true
     end.
+
