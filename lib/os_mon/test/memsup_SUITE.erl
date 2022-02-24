@@ -21,8 +21,9 @@
 -include_lib("common_test/include/ct.hrl").
 
 %% Test server specific exports
--export([all/0, suite/0]).
+-export([all/0, groups/0, suite/0]).
 -export([init_per_suite/1, end_per_suite/1]).
+-export([init_per_group/2, end_per_group/2]).
 -export([init_per_testcase/2, end_per_testcase/2]).
 
 %% Test cases
@@ -52,6 +53,18 @@ end_per_suite(Config) when is_list(Config) ->
     ok = application:stop(os_mon),
     Config.
 
+
+init_per_group(mem_src_ext_sys, Config) ->
+    application:set_env(os_mon, meminfo_src, collect_ext_sys),
+    Config;
+init_per_group(_, Config) ->
+    Config.
+
+end_per_group(mem_src_ext_sys, _Config) ->
+    application:unset_env(os_mon, meminfo_src);
+end_per_group(_, _Config) ->
+    ok.
+
 init_per_testcase(_Case, Config) ->
     Config.
 
@@ -62,7 +75,17 @@ suite() ->
     [{ct_hooks,[ts_install_cth]},
      {timetrap,{minutes,1}}].
 
-all() -> 
+groups() ->
+    [{mem_src_sys, [], all_tcs()},
+     {mem_src_ext_sys, [], all_tcs()}
+    ].
+
+all() ->
+    [{group, mem_src_ext_sys},
+     {group, mem_src_sys}
+    ].
+
+all_tcs() ->
     All = case test_server:os_type() of
               {unix, sunos} ->
                   [api, alarm1, alarm2, process, config, timeout,
@@ -268,8 +291,8 @@ alarm1(_Config, SysUsage) ->
 
     %% Lower/raise the threshold to clear/set the alarm
     NewProcThreshold = if
-                           ProcP -> 1.1*PidUsage;
-                           not ProcP -> 0.9*PidUsage
+                           ProcP -> 1.0;
+                           not ProcP -> 0.0
                        end,
     ok = memsup:set_procmem_high_watermark(NewProcThreshold),
     ok = force_collection(),
@@ -354,13 +377,8 @@ alarm2(_Config, _SysUsage) ->
 
     %% Lower/raise the threshold to clear/set the alarm
     NewSysThreshold = if
-                          SysP ->
-                              Value = 1.1*SysUsage,
-                              if
-                                  Value > 0.99 -> 0.99;
-                                  true -> Value
-                              end;
-                          not SysP -> 0.9*SysUsage
+                          SysP -> 1.0;
+                          not SysP -> 0.0
                       end,
 
     ok = memsup:set_sysmem_high_watermark(NewSysThreshold),
@@ -775,7 +793,8 @@ force_collection() ->
 
 force_collection(TimerRef) ->
     receive
-        {trace, _Pid, 'receive', {collected_sys, _Sys}} ->
+        {trace, _Pid, 'receive', {Tag, _Sys}}
+          when Tag=:=collected_sys orelse Tag=:=collected_ext_sys ->
             erlang:cancel_timer(TimerRef),
             erlang:trace(whereis(memsup), false, ['receive']),
             flush(),
