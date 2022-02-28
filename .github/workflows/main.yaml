@@ -43,7 +43,7 @@ jobs:
     env:
       WXWIDGETS_VERSION: 3.1.4
     name: Build Erlang/OTP on Windows
-    runs-on: windows-latest
+    runs-on: windows-2019
     needs: pack
     steps:
       - uses: Vampire/setup-wsl@v1
