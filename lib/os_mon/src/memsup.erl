@@ -406,7 +406,7 @@ handle_info({collected_sys, {Alloc,Total}}, State) ->
 			clear_alarm(system_memory_high_watermark)
 		end,
 		%% Check if process data should be collected
-        maybe_check_process_mem(State, {Alloc, Total});
+        maybe_check_process_mem(State#state{mem_usage = {Alloc, Total}}, Total);
 	    false ->
 		State
 	end,
@@ -499,7 +499,7 @@ handle_info({collected_ext_sys, SysMemUsage}, State) ->
         false ->
             skip
     end,
-    NewState = maybe_check_process_mem(State, {Alloc, Total}),
+    NewState = maybe_check_process_mem(State, Total),
     {noreply, NewState#state{ext_wd_timer=undefined, ext_pending=[]}};
 
 %% Timeout during ext memory data collection (port_mode==true only)
@@ -850,7 +850,7 @@ clear_alarms() ->
 		  end,
 		  get()).
 
-maybe_check_process_mem(#state{ sys_only = false } = State, {Alloc, Total}) ->
+maybe_check_process_mem(#state{ sys_only = false } = State, Total) ->
     {Pid, Bytes} = get_worst_memory_user(),
     Threshold = State#state.proc_mem_watermark*Total,
     if
@@ -860,9 +860,9 @@ maybe_check_process_mem(#state{ sys_only = false } = State, {Alloc, Total}) ->
         true ->
             clear_alarm(process_memory_high_watermark)
     end,
-    State#state{mem_usage={Alloc, Total},
-                worst_mem_user={Pid, Bytes}};
-maybe_check_process_mem(State, _) ->
+    State#state{worst_mem_user={Pid, Bytes}};
+
+maybe_check_process_mem(State, _Total) ->
     State.
 
 %%--Auxiliary-----------------------------------------------------------
