@@ -498,6 +498,7 @@ struct mac_context
 {
 #if defined(HAS_3_0_API)
     EVP_MAC_CTX *ctx;
+    EVP_MAC *mac;
 #else
     EVP_MD_CTX *ctx;
 #endif
@@ -531,7 +532,10 @@ static void mac_context_dtor(ErlNifEnv* env, struct mac_context *obj)
 
     if (obj->ctx)
 #if defined(HAS_3_0_API)
+    {
         EVP_MAC_CTX_free(obj->ctx);
+        EVP_MAC_free(obj->mac);
+    }
 #else
         EVP_MD_CTX_free(obj->ctx);
 #endif
@@ -730,7 +734,8 @@ ERL_NIF_TERM mac_init_nif(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     if ((obj = enif_alloc_resource(mac_context_rtype, sizeof(struct mac_context))) == NULL)
         assign_goto(return_term, err, EXCP_ERROR(env, "Can't allocate mac_context_rtype"));
 
-    if (!(obj->ctx = EVP_MAC_CTX_new(mac)))
+    obj->mac = mac;
+    if (!(obj->ctx = EVP_MAC_CTX_new(obj->mac)))
         assign_goto(return_term, err, EXCP_ERROR(env, "Can't create EVP_MAC_CTX"));
     
     if (!EVP_MAC_init(obj->ctx, key_bin.data, key_bin.size, params))
