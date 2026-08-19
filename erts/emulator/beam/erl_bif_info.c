@@ -197,6 +197,79 @@ erts_bld_bin_list(Uint **hpp, Uint *szp, ErlOffHeap* oh, Eterm tail)
     return res;
 }
 
+/*
+ * Build a list describing and retaining the ordinary, immutable binaries in
+ * an off-heap list. The returned bitstrings own one reference each, which
+ * keeps their Binary allocations alive independently of the inspected
+ * process.
+ *
+ * A BinRef does not contain the data pointer for magic/resource binaries, and
+ * writable binaries must not be shared without first updating their
+ * ErlSubBits. Neither is available while walking an off-heap list, so expose
+ * these entries as unsupported instead of manufacturing an invalid term.
+ */
+static Eterm
+bld_bin_ref_list(Eterm **hpp, Uint *szp, ErlOffHeap *result_oh,
+                 ErlOffHeap *source_oh, Eterm tail)
+{
+    union erl_off_heap_ptr u;
+    Eterm res = tail;
+    union erts_tmp_aligned_offheap tmp;
+
+    for (u.hdr = source_oh->first; u.hdr; u.hdr = u.hdr->next) {
+        Binary *bin;
+        int supported;
+        Eterm id, orig_size;
+
+        erts_align_offheap(&u, &tmp);
+        if (u.hdr->thing_word != HEADER_BIN_REF)
+            continue;
+
+        bin = u.br->val;
+        supported = !(bin->intern.flags &
+                      (BIN_FLAG_MAGIC |
+                       BIN_FLAG_WRITABLE |
+                       BIN_FLAG_ACTIVE_WRITER));
+
+        id = erts_bld_uword(hpp, szp, (UWord) bin);
+        orig_size = erts_bld_uint(hpp, szp, bin->orig_size);
+
+        if (szp) {
+            *szp += 5 + 2; /* 4-tuple and cons */
+            if (supported)
+                *szp += ERL_REFC_BITS_SIZE;
+        }
+
+        if (hpp) {
+            Uint refc = (Uint) erts_refc_read(&bin->intern.refc, 1);
+            Eterm bin_ref = am_unsupported;
+            Eterm tuple;
+
+            if (supported) {
+                Eterm *bin_hp = *hpp;
+
+                /* The new BinRef created below owns this reference. */
+                erts_refc_inc(&bin->intern.refc, 2);
+                bin_ref = erts_wrap_refc_bitstring(&result_oh->first,
+                                                   &result_oh->overhead,
+                                                   &bin_hp,
+                                                   bin,
+                                                   (byte *) bin->orig_bytes,
+                                                   0,
+                                                   NBITS(bin->orig_size));
+                ASSERT(bin_hp == *hpp + ERL_REFC_BITS_SIZE);
+                *hpp = bin_hp;
+            }
+
+            tuple = TUPLE4(*hpp, id, orig_size, make_small(refc), bin_ref);
+            res = CONS(*hpp + 5, tuple, res);
+            *hpp += 5 + 2;
+        }
+    }
+
+    return res;
+}
+
 static Eterm
 bld_magic_ref_bin_list(Uint **hpp, Uint *szp, ErlOffHeap* oh)
 {
@@ -784,6 +857,9 @@ collect_one_suspend_monitor(ErtsMonitor *mon, void *vsmicp, Sint reds)
 #define ERTS_PI_IX_DICTIONARY_LOOKUP                    38
 #define ERTS_PI_IX_LABEL                                39
 
+// EMQX
+#define ERTS_PI_IX_BINARY_REF                           64
+
 #define ERTS_PI_UNRESERVE(RS, SZ) \
     (ASSERT((RS) >= (SZ)), (RS) -= (SZ))
 
@@ -836,6 +912,7 @@ static ErtsProcessInfoArgs pi_args[] = {
     {am_async_dist, 0, 0, ERTS_PROC_LOCK_MAIN},
     {am_dictionary, 3, ERTS_PI_FLAG_FORCE_SIG_SEND|ERTS_PI_FLAG_KEY_TUPLE2, ERTS_PROC_LOCK_MAIN},
     {am_label, 0, ERTS_PI_FLAG_FORCE_SIG_SEND, ERTS_PROC_LOCK_MAIN},
+    {am_binary_ref, 0, ERTS_PI_FLAG_FORCE_SIG_SEND, ERTS_PROC_LOCK_MAIN}
 };
 
 #define ERTS_PI_ARGS ((int) (sizeof(pi_args)/sizeof(pi_args[0])))
@@ -934,6 +1011,8 @@ pi_arg2ix(Eterm arg, Eterm *extrap)
         return ERTS_PI_IX_TRACE;
     case am_binary:
         return ERTS_PI_IX_BINARY;
+    case am_binary_ref:
+        return ERTS_PI_IX_BINARY_REF;
     case am_sequential_trace_token:
         return ERTS_PI_IX_SEQUENTIAL_TRACE_TOKEN;
     case am_catchlevel:
@@ -2135,6 +2214,36 @@ process_info_aux(Process *c_p,
         res = erts_bld_bin_list(&hp, NULL, &wrt_bins, res);
         for (hfrag = rp->mbuf; hfrag != NULL; hfrag = hfrag->next) {
             res = erts_bld_bin_list(&hp, NULL, &hfrag->off_heap, res);
+        }
+
+        break;
+    }
+
+    case ERTS_PI_IX_BINARY_REF: {
+        ErlHeapFragment *hfrag;
+        ErlOffHeap wrt_bins;
+        Uint sz;
+
+        res = NIL;
+        sz = 0;
+        wrt_bins.first = rp->wrt_bins;
+
+        (void)bld_bin_ref_list(NULL, &sz, NULL, &MSO(rp), NIL);
+        (void)bld_bin_ref_list(NULL, &sz, NULL, &wrt_bins, NIL);
+        for (hfrag = rp->mbuf; hfrag != NULL; hfrag = hfrag->next) {
+            (void)bld_bin_ref_list(NULL, &sz, NULL,
+                                   &hfrag->off_heap, NIL);
+        }
+
+        hp = erts_produce_heap(hfact, sz, reserve_size);
+
+        res = bld_bin_ref_list(&hp, NULL, hfact->off_heap,
+                               &MSO(rp), NIL);
+        res = bld_bin_ref_list(&hp, NULL, hfact->off_heap,
+                               &wrt_bins, res);
+        for (hfrag = rp->mbuf; hfrag != NULL; hfrag = hfrag->next) {
+            res = bld_bin_ref_list(&hp, NULL, hfact->off_heap,
+                                   &hfrag->off_heap, res);
         }
 
         break;

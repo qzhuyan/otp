@@ -7711,6 +7711,7 @@ process_flag(_Flag, _Value) ->
       async_dist |
       backtrace |
       binary |
+      binary_ref |
       catchlevel |
       current_function |
       current_location |
@@ -7752,6 +7753,10 @@ process_flag(_Flag, _Value) ->
       {binary, BinInfo :: [{non_neg_integer(),
                             non_neg_integer(),
                             non_neg_integer()}]} |
+      {binary_ref, BinRefInfo :: [{non_neg_integer(),
+                                   non_neg_integer(),
+                                   non_neg_integer(),
+                                   binary() | unsupported}]} |
       {catchlevel, CatchLevel :: non_neg_integer()} |
       {current_function,
        {Module :: module(), Function :: atom(), Arity :: arity()} | undefined} |
@@ -7847,6 +7852,23 @@ Valid `InfoTuple`s with corresponding `Item`s:
   be changed or removed without prior notice. In the current implementation
   `BinInfo` is a list of tuples. The tuples contain; `BinaryId`, `BinarySize`,
   `BinaryRefcCount`.
+
+  Depending on the value of the
+  [`message_queue_data`](#process_flag_message_queue_data) process
+  flag the message queue may be stored on the heap.
+
+- **`{binary_ref, BinRefInfo}`** - `BinRefInfo` contains the same allocation
+  information as `binary`, with a fourth element containing a binary that
+  references the complete backing allocation. Retaining this binary prevents
+  the backing allocation from being freed, even if the inspected process exits
+  or garbage-collects its reference. The reported reference count is sampled
+  before the returned reference is added.
+
+  Writable binaries and magic/resource-backed binaries are reported with
+  `unsupported` as their fourth element. A backing allocation can be larger
+  than the logical subbinary that keeps it alive, so this item can expose data
+  outside that subbinary. This `InfoTuple` is intended for debugging and can be
+  changed or removed without prior notice.
 
   Depending on the value of the
   [`message_queue_data`](#process_flag_message_queue_data) process

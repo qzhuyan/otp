@@ -42,6 +42,7 @@
 	 process_info_other_dist_msg/1,
          process_info_other_status/1,
 	 process_info_2_list/1, process_info_lock_reschedule/1,
+	 process_info_binary_ref/1,
 	 process_info_lock_reschedule2/1,
 	 process_info_lock_reschedule3/1,
          process_info_garbage_collection/1,
@@ -170,6 +171,7 @@ groups() ->
        process_info_other_message_queue_len_signal_race,
        process_info_other_dist_msg, process_info_other_status,
        process_info_2_list,
+       process_info_binary_ref,
        process_info_lock_reschedule,
        process_info_lock_reschedule2,
        process_info_lock_reschedule3,
@@ -911,6 +913,54 @@ process_info_2_list(Config) when is_list(Config) ->
     5000 = length(V3),
     lists:foreach(fun ({backtrace, _}) -> ok end, V3),
     ok.
+
+process_info_binary_ref(Config) when is_list(Config) ->
+    Parent = self(),
+    Size = 4097,
+    {Pid, MRef} = spawn_monitor(fun() -> binary_ref_owner(Parent, Size) end),
+    receive
+        {binary_ref_ready, Pid} -> ok
+    end,
+
+    {binary, BinInfo0} = process_info(Pid, binary),
+    [{Id, Size, Refc0}] = [Info || Info = {_, BinSize, _} <- BinInfo0,
+                                   BinSize =:= Size],
+
+    {binary_ref, BinRefInfo} = process_info(Pid, binary_ref),
+    [{Id, Size, Refc0, Retained}] = [Info || Info = {BinId, _, _, _}
+                                                 <- BinRefInfo,
+                                             BinId =:= Id],
+    true = is_binary(Retained),
+    Expected = list_to_binary([N band 255 || N <- lists:seq(0, Size - 1)]),
+    Expected = Retained,
+
+    %% The reference returned above is now an independent owner.
+    {binary, BinInfo1} = process_info(Pid, binary),
+    [{Id, Size, Refc1}] = [Info || Info = {BinId, _, _} <- BinInfo1,
+                                   BinId =:= Id],
+    Refc1 = Refc0 + 1,
+
+    Pid ! {stop, Parent},
+    receive
+        {binary_ref_stopped, Pid, Hash} ->
+            Hash = erlang:phash2(Expected)
+    end,
+    receive
+        {'DOWN', MRef, process, Pid, normal} -> ok
+    end,
+
+    garbage_collect(),
+    Expected = Retained,
+    ok.
+
+binary_ref_owner(Parent, Size) ->
+    Bin = list_to_binary([N band 255 || N <- lists:seq(0, Size - 1)]),
+    garbage_collect(),
+    Parent ! {binary_ref_ready, self()},
+    receive
+        {stop, Parent} ->
+            Parent ! {binary_ref_stopped, self(), erlang:phash2(Bin)}
+    end.
     
 process_info_lock_reschedule(Config) when is_list(Config) ->
     %% We need a process that is running and an item that requires
